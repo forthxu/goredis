@@ -14,9 +14,7 @@ import (
 	"syscall"
 )
 
-const (
-	MaxPoolSize = 5
-)
+var MaxPoolSize = 50
 
 var defaultAddr = "127.0.0.1:7379"
 
@@ -34,6 +32,16 @@ type RedisError string
 func (err RedisError) Error() string { return "Redis Error: " + string(err) }
 
 var doesNotExist = RedisError("Key does not exist ")
+
+func NewClient(poolsize int) (c *Client) {
+       _c := new(Client)
+       MaxPoolSize = poolsize
+       _c.pool = make(chan net.Conn, MaxPoolSize)
+       for i := 0; i < MaxPoolSize; i++ {
+               _c.pool <- nil
+       }
+       return _c
+}
 
 // reads a bulk reply (i.e $5\r\nhello)
 func readBulk(reader *bufio.Reader, head string) ([]byte, error) {
@@ -215,6 +223,16 @@ func (client *Client) sendCommand(cmd string, args ...string) (data interface{},
 		}
 
 		data, err = client.rawSend(c, b)
+
+	    //in case of "connection reset by peer" or "broken pipe"
+	    if err != nil {
+	        msg := err.Error()
+	        if strings.Contains(msg, "reset") || strings.Contains(msg, "broken"){
+	            c.Close()
+	            client.pushCon(nil)
+	            return data, err
+	        }
+	    }
 	}
 
 
@@ -243,7 +261,7 @@ func (client *Client) sendCommands(cmdArgs <-chan []string, data chan<- interfac
 	err = writeRequest(c, "PING")
 
 	// On first attempt permit a reconnection attempt
-	if err == io.EOF {
+	if err == io.EOF || err == io.ErrClosedPipe {
 		// Looks like we have to open a new connection
 		c, err = client.openConnection()
 		if err != nil {
@@ -766,6 +784,19 @@ func (client *Client) Sadd(key string, value []byte) (bool, error) {
 	return res.(int64) == 1, nil
 }
 
+//Sadd mutiple members, with redis >=2.4
+func (client *Client) Smadd(key string, members []string ) (bool, error) {
+    args := []string{client.Prefix+key}
+    args = append(args, members...)
+    res, err := client.sendCommand("SADD", args...)
+
+    if err != nil {
+        return false, err
+    }
+
+    return res.(int64) >= 1, nil
+}
+
 func (client *Client) Srem(key string, value []byte) (bool, error) {
 	res, err := client.sendCommand("SREM", client.Prefix+key, string(value))
 
@@ -933,6 +964,21 @@ func (client *Client) Zadd(key string, value []byte, score float64) (bool, error
 	return res.(int64) == 1, nil
 }
 
+// zadd multiple elements. redis >=2.4
+func (client *Client) Zmadd(key string, values map[string]float64 ) (bool, error) {
+       args := []string{client.Prefix+key}
+       for val,score := range values {
+               args = append(args, strconv.FormatFloat(score, 'f', -1, 64))
+               args = append(args, val)
+       }
+       res, err := client.sendCommand("ZADD", args...)
+       if err != nil {
+               return false, err
+       }
+
+       return res.(int64) >= 1, nil
+}
+
 func (client *Client) Zrem(key string, value []byte) (bool, error) {
 	res, err := client.sendCommand("ZREM", client.Prefix+key, string(value))
 	if err != nil {
@@ -971,13 +1017,17 @@ func (client *Client) Zrevrank(key string, value []byte) (int, error) {
 	return int(res.(int64)), nil
 }
 
-func (client *Client) Zrange(key string, start int, end int) ([][]byte, error) {
-	res, err := client.sendCommand("ZRANGE", client.Prefix+key, strconv.Itoa(start), strconv.Itoa(end))
-	if err != nil {
-		return nil, err
-	}
+func (client *Client) Zrange(key string, start int, end int,WITHSCORES ...string) ([][]byte, error) {
+      args := []string{client.Prefix+key,strconv.Itoa(start), strconv.Itoa(end)}
+      if len(WITHSCORES) == 1 && WITHSCORES[0] == "WITHSCORES" {
+          args = append(args,"WITHSCORES")
+      }
+      res, err := client.sendCommand("ZRANGE", args...)
+      if err != nil {
+          return nil, err
+      }
 
-	return res.([][]byte), nil
+      return res.([][]byte), nil
 }
 
 func (client *Client) Zrevrange(key string, start int, end int) ([][]byte, error) {
@@ -989,8 +1039,17 @@ func (client *Client) Zrevrange(key string, start int, end int) ([][]byte, error
 	return res.([][]byte), nil
 }
 
-func (client *Client) Zrangebyscore(key string, start float64, end float64) ([][]byte, error) {
-	res, err := client.sendCommand("ZRANGEBYSCORE", client.Prefix+key, strconv.FormatFloat(start, 'f', -1, 64), strconv.FormatFloat(end, 'f', -1, 64))
+func (client *Client) Zrangebyscore(key string, start float64, end float64, offset int, count int) ([][]byte, error) {
+    res, err := client.sendCommand("ZRANGEBYSCORE", client.Prefix+key, strconv.FormatFloat(start, 'f', -1, 64), strconv.FormatFloat(end, 'f', -1, 64), "WITHSCORES", "LIMIT", strconv.Itoa(offset), strconv.Itoa(count))
+	if err != nil {
+		return nil, err
+	}
+
+	return res.([][]byte), nil
+}
+
+func (client *Client) Zrevrangebyscore(key string, start float64, end float64, offset int, count int) ([][]byte, error) {
+	res, err := client.sendCommand("ZREVRANGEBYSCORE", client.Prefix+key, strconv.FormatFloat(start, 'f', -1, 64), strconv.FormatFloat(end, 'f', -1, 64), "WITHSCORES", "LIMIT", strconv.Itoa(offset), strconv.Itoa(count))
 	if err != nil {
 		return nil, err
 	}
@@ -1035,6 +1094,7 @@ func (client *Client) Zremrangebyscore(key string, start float64, end float64) (
 
 	return int(res.(int64)), nil
 }
+
 
 // hash commands
 
