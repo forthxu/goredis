@@ -14,7 +14,7 @@ import (
 	"syscall"
 )
 
-var MaxPoolSize = 50
+var MaxPoolSize = 10
 
 var defaultAddr = "127.0.0.1:7379"
 
