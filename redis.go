@@ -403,7 +403,7 @@ func (client *Client) Keys(pattern string) ([]string, error) {
 	}
 	ret := make([]string, len(keydata))
 	for i, k := range keydata {
-		ret[i] = string(k)
+		ret[i] = strings.Replace(string(k), client.Prefix, "", 1)
 	}
 	return ret, nil
 }
