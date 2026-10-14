@@ -214,7 +214,8 @@ func (client *Client) sendCommand(cmd string, args ...string) (data interface{},
 
 	b = commandBytes(cmd, args...)
 	data, err = client.rawSend(c, b)
-	if err2, ok := err.(syscall.Errno); err == io.EOF || (ok && err2 == syscall.EPIPE) {
+	if errors.Is(err, io.EOF) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+		c.Close()
 		c, err = client.openConnection()
 		if err != nil {
 			//add the client back to the queue
@@ -227,7 +228,7 @@ func (client *Client) sendCommand(cmd string, args ...string) (data interface{},
 	    //in case of "connection reset by peer" or "broken pipe"
 	    if err != nil {
 	        msg := err.Error()
-	        if strings.Contains(msg, "reset") || strings.Contains(msg, "broken"){
+	        if errors.Is(err, io.EOF) || strings.Contains(msg, "reset") || strings.Contains(msg, "broken"){
 	            c.Close()
 	            client.pushCon(nil)
 	            return data, err
